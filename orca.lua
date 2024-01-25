@@ -42,7 +42,6 @@ local fileselect = require "fileselect"
 local music = require "musicutil"
 local tab = require "tabutil"
 local textentry = require "textentry"
-local keyboard = require 'core/keyboard'
 
 local ccrow = include("lib/crow")
 local engines = include("lib/engines")
@@ -56,6 +55,7 @@ local VAL_LIST = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c
 
 local update_id
 local running = true
+local keyboard = hid.connect()
 local g = grid.connect()
 local arc = arc.connect()
 local val_index, ops_index, notes_index = 1, 1, 1
@@ -97,15 +97,6 @@ local orca = {
     pos = {0, 0, 0, 0, 0, 0},
   },
 }
-
--- NB: tabutil.key cannot be used as it returns the numerical index
-local function find_in_table(search_v, t)
-  for k, v in pairs(t) do
-    if v == search_v then
-      return k
-    end
-  end
-end
 
 function orca.normalize(n)
   return n == "e" and "F" or n == "b" and "C" or n
@@ -485,52 +476,52 @@ end
 --- arc
 function orca.arc_delta(enc)
   if enc == 1 then
-    return grid.arc[1]
+    return orca.arc[1]
   elseif enc == 2 then
-    return grid.arc[2]
+    return orca.arc[2]
   elseif enc == 3 then
-    return grid.arc[3]
+    return orca.arc[3]
   elseif enc == 4 then
-    return grid.arc[4]
+    return orca.arc[4]
   end
 end
 
 function arc.delta(enc, offset)
   if enc == 1 then
-    grid.arc[1] = (offset + grid.arc[1]) % 35
+    orca.arc[1] = (offset + orca.arc[1]) % 35
     for i = 0, 63 do
-      if i ~= grid.arc[1] then
+      if i ~= orca.arc[1] then
         arc:led(enc, i, 0)
       end
     end
-    arc:led(enc, grid.arc[1], 15)
+    arc:led(enc, orca.arc[1], 15)
     arc:refresh()
   elseif enc == 2 then
-    grid.arc[2] = (offset + grid.arc[2]) % 35
+    orca.arc[2] = (offset + orca.arc[2]) % 35
     for i = 0, 63 do
-      if i ~= grid.arc[2] then
+      if i ~= orca.arc[2] then
         arc:led(enc, i, 0)
       end
     end
-    arc:led(enc, grid.arc[2], 15)
+    arc:led(enc, orca.arc[2], 15)
     arc:refresh()
   elseif enc == 3 then
-    grid.arc[3] = (offset + grid.arc[3]) % 35
+    orca.arc[3] = (offset + orca.arc[3]) % 35
     for i= 0, 63 do
-      if i ~= grid.arc[3] then
+      if i ~= orca.arc[3] then
         arc:led(enc, i, 0)
       end
     end
-    arc:led(enc, grid.arc[3], 15)
+    arc:led(enc, orca.arc[3], 15)
     arc:refresh()
   elseif enc == 4 then
-    grid.arc[4] = (offset + grid.arc[4]) % 35
+    orca.arc[4] = (offset + orca.arc[4]) % 35
     for i = 0, 63 do
-      if i ~= grid.arc[4] then
+      if i ~= orca.arc[4] then
         arc:led(enc, i, 0)
       end
     end
-    arc:led(enc, grid.arc[4], 15)
+    arc:led(enc, orca.arc[4], 15)
     arc:refresh()
   end
 end
@@ -560,10 +551,7 @@ function orca:reload()
 
   engines.init(self)
 
-  redraw_metro = metro.init(function(stage)
-    redraw()
-  end, 1 / 60)
-  redraw_metro:start()
+  refresh()
 
   clock.transport.start()
 
@@ -619,11 +607,10 @@ local function add_params()
 end
 
 function update()
-  while true do
-    clock.sync(1 / 4) -- fires every quarter note
-    orca:operate()
-    g:redraw()
-  end
+  clock.sync(1 / 4) -- fires every quarter note
+  clock.run(update)
+  orca:operate()
+  g:redraw()
 end
 
 function clock.transport.start()
@@ -715,33 +702,7 @@ local kb = {
   s = {[42] = true, [54] = true},
   c = {[29] = true, [125] = true, [127] = true, [97] = true}
 }
-
-
-local is_normal_k_pressed = false
-keyboard.char = function(a)
-  local keyinput = a
-  if is_normal_k_pressed then
-    if not ctrl then
-      if orca.cell[y_index][x_index] == "/" then
-        orca.sc_ops.count = util.clamp(orca.sc_ops.count - 1, 1, 6)
-      end
-      cell_input = keyinput
-      orca.cell[y_index][x_index] = keyinput
-    elseif ctrl then
-      if a == 'x' then
-        orca:copy_area(x_index, y_index, true)
-      elseif a == 'c' then
-        orca:copy_area(x_index, y_index)
-      elseif a == 'v' then
-        orca:paste_area(x_index, y_index)
-      end
-    end
-  end
-end
-
-keyboard.code = function(c, val)
-  local code = find_in_table(c, keyboard.codes)
-
+function keyboard.event(typ, code, val)
   local menu = norns.menu.status()
 
   if kb.s[code] then
@@ -825,11 +786,25 @@ keyboard.code = function(c, val)
     else
       params:set("clock_tempo", params:get("clock_tempo") + 10)
     end
-  else
-    -- NB: keyboard.char gets triggered AFTER keyboard.code
-    -- hence we use a basic semaphore variable to allow it to process normal keys
-    is_normal_k_pressed = (val == 1)
-  end
+  else if val == 1 then
+    local keyinput = get_key(code, val, shift)
+    if not ctrl then
+        if orca.cell[y_index][x_index] == "/" then
+          orca.sc_ops.count = util.clamp(orca.sc_ops.count - 1, 1, 6)
+        end
+      cell_input = keyinput
+      orca.cell[y_index][x_index] = keyinput
+      elseif ctrl then
+        if code == 45 then
+          orca:copy_area(x_index, y_index, true)
+        elseif code == 46 then
+          orca:copy_area(x_index, y_index)
+        elseif code == 47 then
+          orca:paste_area(x_index, y_index)
+        end
+      end
+   end
+ end
 end
 
 local function draw_op_frame(x, y, b)
@@ -1046,7 +1021,12 @@ function redraw()
   screen.update()
 end
 
+function refresh()
+  redraw()
+end
+
 --- Writes Orca state params on script end.
 function cleanup()
   orca.state:write(norns.state.data .. "orca-state.pset")
 end
+
